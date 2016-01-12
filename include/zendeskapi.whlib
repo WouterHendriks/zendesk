@@ -1,0 +1,138 @@
+<?wh
+LOADLIB "wh::internet/webbrowser.whlib";
+LOADLIB "wh::datetime.whlib";
+LOADLIB "wh::files.whlib";
+LOADLIB "wh::money.whlib";
+LOADLIB "module::system/cache.whlib";
+
+//__webbrowser_debugall := TRUE;
+
+PUBLIC OBJECTTYPE ZendeskAPI
+<
+  //************************************************************
+  //
+  // Private variables
+  //
+  STRING useremail;
+  STRING zendesktag;
+  STRING apitoken; // https://xxxxxxxxx.zendesk.com/agent/admin/api
+
+  //************************************************************
+  //
+  // Constructor
+  //
+  MACRO NEW(STRING zendesktag, STRING useremail, STRING apitoken)
+  {
+    this->zendesktag := zendesktag;
+    this->useremail := useremail;
+    this->apitoken := apitoken;
+  }
+
+  //************************************************************
+  //
+  // Public functions
+  //
+  PUBLIC RECORD FUNCTION GetAPIResult(STRING path)
+  {
+    //curl -u w.hendriks@itmundi.nl/token:ztyeIXV7K9x3NpNP1WfR7nk2YRZY5JDlNcFERcls https://nerds-and-company.zendesk.com/api/v2/users/me.json
+    STRING url := "https://" || EncodeURL(this->useremail) || "%2Ftoken:" || this->apitoken || "@" || this->zendesktag || ".zendesk.com/api/v2/" || path;
+
+    OBJECT browser := NEW WebBrowser;
+
+    browser->SendRawRequest("GET", url, [[ field := "Content-Type", value := "application/json" ]
+                                        ,[ field := "Accept", value := "application/json" ]
+                                        ], DEFAULT BLOB);
+
+    IF (Length(browser->content) = 0)
+      RETURN DEFAULT RECORD;
+
+    STRING browsercontent := BlobToString(browser->content,-1);
+    IF (browsercontent = "[]" OR TrimWhiteSpace(browsercontent) = "")
+      RETURN DEFAULT RECORD;
+
+    RETURN DecodeJSON(browsercontent);
+  }
+
+  PUBLIC RECORD FUNCTION GetLoggedInUser()
+  {
+    RECORD data := this->GetAPIResult("users/me.json");
+    IF (NOT CellExists(data,"user"))
+      THROW NEW Exception("Could not get user data: " || AnyToString(data,'tree'));
+
+    RETURN data.user;
+  }
+
+  PUBLIC RECORD ARRAY FUNCTION GetOrganizations()
+  {
+    RETURN GetAdhocCached([ type := "organizations"
+                          ], PTR this->GetCachedOrganizations());
+  }
+
+  /** @short Returns new & open tickets */
+  PUBLIC RECORD ARRAY FUNCTION GetOpenTickets()
+  {
+    STRING query := "type:ticket status:open status:new";
+
+    RETURN GetAdhocCached([ type := "searchtickets"
+                          , query := query
+                          ], PTR this->GetCachedSearchResults(query));
+  }
+
+  //************************************************************
+  //
+  // Private functions
+  //
+  RECORD FUNCTION GetCachedOrganizations()
+  {
+
+    RECORD ARRAY organizations;
+
+    STRING restpath := "organizations.json";
+    WHILE (TRUE)
+    {
+      RECORD data := this->GetAPIResult(restpath);
+      IF (NOT CellExists(data,"organizations"))
+        THROW NEW Exception("Could not get organizations: " || AnyToString(data,'tree'));
+
+      //abort(data.next_page);
+      organizations := organizations CONCAT data.organizations;
+
+      IF (TypeID(data.next_page) != TypeID(STRING) OR data.next_page = "")
+        BREAK;
+
+      // URL is 'https://xxxxxx.zendesk.com/api/v2/organizations.json?page=2'; strip the '.../v2/' part
+      INTEGER v2pos := SearchSubString(data.next_page, "v2/") + 1;
+      restpath := SubString(data.next_page, v2pos + 2);
+    }
+
+    RETURN [ value := organizations
+           , ttl := 5 * 60000 // 5 mins
+           ];
+  }
+
+  RECORD FUNCTION GetCachedSearchResults(STRING query)
+  {
+    //FIXME: Handle cell 'next_page' and 'previous_page'
+
+    RECORD data := this->GetAPIResult("search.json?query=" || query);
+    IF (NOT CellExists(data,"results"))
+      THROW NEW Exception("Could not get items for query '" || query || "': " || AnyToString(data,'tree'));
+
+    RECORD ARRAY tickets := SELECT *
+                                 , created_at := MakeDateFromText(created_at)
+                                 , updated_at := MakeDateFromText(updated_at)
+                                 , organization_id := (TypeID(organization_id) = TypeID(INTEGER) ? organization_id : 0)
+                              FROM data.results;
+
+    RETURN [ value := tickets
+           , ttl := 5 * 60000 // 5 mins
+           ];
+  }
+>;
+
+PUBLIC OBJECT FUNCTION GetZendeskAPI(STRING zendesktag, STRING useremail, STRING apitoken)
+{
+  RETURN NEW ZendeskAPI(zendesktag, useremail, apitoken);
+}
+
+
