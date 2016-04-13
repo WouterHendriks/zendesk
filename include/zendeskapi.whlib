@@ -34,7 +34,6 @@ PUBLIC OBJECTTYPE ZendeskAPI
   //
   PUBLIC RECORD FUNCTION GetAPIResult(STRING path)
   {
-    //curl -u w.hendriks@itmundi.nl/token:ztyeIXV7K9x3NpNP1WfR7nk2YRZY5JDlNcFERcls https://nerds-and-company.zendesk.com/api/v2/users/me.json
     STRING url := "https://" || EncodeURL(this->useremail) || "%2Ftoken:" || this->apitoken || "@" || this->zendesktag || ".zendesk.com/api/v2/" || path;
 
     OBJECT browser := NEW WebBrowser;
